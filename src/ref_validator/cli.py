@@ -10,7 +10,7 @@ from rich.console import Console
 from ref_validator.config import Settings
 from ref_validator.errors import RefValidatorError
 from ref_validator.models.verification import VerificationLevel
-from ref_validator.output import print_report, report_to_json
+from ref_validator.output import print_report, report_to_json, report_to_markdown
 
 app = typer.Typer(name="ref-validator", help="Validate academic references in papers.")
 console = Console()
@@ -44,8 +44,9 @@ class RichProgress:
 def validate(
     paper: Path = typer.Argument(..., help="Path to PDF paper", exists=True, readable=True),
     level: int = typer.Option(2, "-l", "--level", min=1, max=3, help="Verification level (1-3)"),
-    output: Path | None = typer.Option(None, "-o", "--output", help="Save JSON report to file"),
+    output: Path | None = typer.Option(None, "-o", "--output", help="Save report to file (.json or .md)"),
     json_output: bool = typer.Option(False, "--json", help="Print JSON to stdout"),
+    md_output: bool = typer.Option(False, "--md", help="Print Markdown to stdout"),
     costs: bool = typer.Option(False, "--costs", help="Track and display LLM costs"),
     concurrency: int = typer.Option(5, "--concurrency", min=1, max=50, help="Max concurrent API calls"),
     refs_dir: Path | None = typer.Option(None, "--refs-dir", help="Directory containing PDFs of cited papers"),
@@ -70,16 +71,21 @@ def validate(
 
         pipeline = ValidationPipeline(settings, track_costs=costs)
         try:
-            progress = RichProgress(console) if not json_output else None
+            progress = RichProgress(console) if not (json_output or md_output) else None
             report = await pipeline.validate(paper, level=verification_level, progress=progress)
 
             if json_output:
                 print(report_to_json(report))
+            elif md_output:
+                print(report_to_markdown(report))
             else:
                 print_report(report, console)
 
             if output:
-                output.write_text(report_to_json(report))
+                if output.suffix == ".md":
+                    output.write_text(report_to_markdown(report))
+                else:
+                    output.write_text(report_to_json(report))
                 console.print(f"\n[dim]Report saved to {output}[/dim]")
 
         except RefValidatorError as e:

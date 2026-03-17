@@ -94,6 +94,85 @@ def print_report(report: ValidationReport, console: Console | None = None) -> No
         console.print(f"[dim]Estimated cost: ${cs.total_estimated_cost_usd:.4f}[/dim]")
 
 
+def report_to_markdown(report: ValidationReport) -> str:
+    """Serialize report to Markdown string."""
+    lines: list[str] = []
+
+    lines.append("# Reference Validation Report")
+    lines.append("")
+    lines.append(f"- **Paper:** {report.paper_path}")
+    lines.append(f"- **Verification level:** {report.verification_level.name} (level {report.verification_level.value})")
+    lines.append(f"- **Total references:** {report.total_references}")
+    lines.append(f"- **Verified:** {report.verified_count}")
+    lines.append(f"- **Unverified:** {report.unverified_count}")
+    lines.append(f"- **Errors:** {report.error_count}")
+    lines.append("")
+
+    # Results table
+    lines.append("## Results")
+    lines.append("")
+    lines.append("| Ref | Title | Status | Issues |")
+    lines.append("|-----|-------|--------|--------|")
+
+    for result in report.results:
+        label = result.status.value.upper()
+        title = result.reference.title[:50] if result.reference else "(unknown)"
+        # Escape pipes in markdown table cells
+        title = title.replace("|", "\\|")
+        issues_text = "; ".join(result.issues[:2]) if result.issues else ""
+        issues_text = issues_text.replace("|", "\\|")
+        lines.append(f"| {result.ref_id} | {title} | {label} | {issues_text} |")
+
+    lines.append("")
+
+    # Claim details for level 3
+    if report.verification_level == VerificationLevel.CLAIMS:
+        has_claims = any(r.claim_results for r in report.results)
+        if has_claims:
+            lines.append("## Claim Verification Details")
+            lines.append("")
+            for result in report.results:
+                if not result.claim_results:
+                    continue
+                ref_title = result.reference.title[:60] if result.reference else "(unknown)"
+                lines.append(f"### [{result.ref_id}] {ref_title}")
+                lines.append("")
+                for cr in result.claim_results:
+                    if cr.supported is True:
+                        verdict = "SUPPORTED"
+                    elif cr.supported is False:
+                        verdict = "CONTRADICTED"
+                    else:
+                        verdict = "INCONCLUSIVE"
+
+                    if cr.source_type and cr.source_via:
+                        source = f"{cr.source_type} via {cr.source_via}"
+                    elif cr.source_type:
+                        source = cr.source_type
+                    elif cr.sources_tried:
+                        source = f"no source found (tried: {', '.join(cr.sources_tried)})"
+                    else:
+                        source = "no source"
+
+                    lines.append(f"- **{verdict}** ({source}): {cr.claim}")
+                    if cr.explanation:
+                        lines.append(f"  - {cr.explanation}")
+                    if cr.confidence > 0:
+                        lines.append(f"  - Confidence: {cr.confidence:.0%}")
+                lines.append("")
+
+    # Cost summary
+    if report.cost_summary:
+        cs = report.cost_summary
+        lines.append("## Cost Summary")
+        lines.append("")
+        lines.append(f"- **Tokens:** {cs.total_input_tokens:,} in / {cs.total_output_tokens:,} out")
+        lines.append(f"- **Estimated cost:** ${cs.total_estimated_cost_usd:.4f}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 def report_to_json(report: ValidationReport) -> str:
     """Serialize report to JSON string."""
     return report.model_dump_json(indent=2)

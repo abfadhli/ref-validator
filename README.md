@@ -11,7 +11,7 @@ Validate academic references in PDF papers. Detects fabricated citations by chec
 
 ```bash
 # Clone and install
-git clone <repo-url>
+git clone https://github.com/abfadhli/ref-validator.git
 cd ref-validator
 python -m venv venv
 source venv/bin/activate   # Linux/macOS
@@ -90,11 +90,17 @@ ref-validator validate paper.pdf -l 3
 # Level 3 with user-supplied PDFs of cited papers (best accuracy)
 ref-validator validate paper.pdf -l 3 --refs-dir ./cited_papers/
 
-# Save report as JSON file
+# Save report as JSON
 ref-validator validate paper.pdf -o report.json
 
-# Print JSON to stdout (no Rich formatting)
+# Save report as Markdown
+ref-validator validate paper.pdf -o report.md
+
+# Print JSON to stdout
 ref-validator validate paper.pdf --json
+
+# Print Markdown to stdout (great for feeding to AI models)
+ref-validator validate paper.pdf --md
 
 # Show estimated LLM costs
 ref-validator validate paper.pdf --costs
@@ -133,8 +139,9 @@ Arguments:
 
 Options:
   -l, --level INTEGER        Verification level 1-3 [default: 2]
-  -o, --output PATH          Save JSON report to file
+  -o, --output PATH          Save report to file (.json or .md)
   --json                     Print JSON to stdout
+  --md                       Print Markdown to stdout
   --costs                    Track and display LLM costs
   --concurrency INTEGER      Max concurrent API calls [default: 5]
   --refs-dir PATH            Directory containing PDFs of cited papers
@@ -223,14 +230,13 @@ The Rich-formatted table shows one row per reference:
 |---|---|
 | **Ref** | Reference identifier from the paper (e.g., `1`, `Smith2020`) |
 | **Title** | Extracted title (truncated to 50 chars) |
-| **Status** | `VERIFIED`, `PARTIAL`, `UNVERIFIED`, or `ERROR` |
+| **Status** | `VERIFIED`, `UNVERIFIED`, or `ERROR` |
 | **Issues** | What went wrong, if anything |
 
 Status meanings:
 
 - **VERIFIED** — All checks passed at the requested level.
-- **PARTIAL** — Paper exists but some metadata doesn't match, or claims are inconclusive.
-- **UNVERIFIED** — Paper not found in any database, or a claim was contradicted.
+- **UNVERIFIED** — Paper not found, metadata doesn't match, or a claim was contradicted.
 - **ERROR** — Something went wrong (API failure, timeout, etc.). The issue is noted but the run continues.
 
 At level 3, a **Claim Verification Details** section follows the table:
@@ -246,9 +252,26 @@ Claim Verification Details
 
 Each claim shows its verdict (`supported`, `contradicted`, or `inconclusive`) and which source provided the content. When no source was found, the list of attempted sources is shown.
 
+### Markdown report
+
+The Markdown output (via `--md` or `-o report.md`) is readable by both humans and AI models:
+
+```bash
+# Print to stdout
+ref-validator validate paper.pdf -l 3 --md
+
+# Save to file
+ref-validator validate paper.pdf -l 3 -o report.md
+
+# Feed directly to an AI model
+ref-validator validate paper.pdf -l 3 --md | claude "Analyze this report"
+```
+
+The `-o` flag auto-detects format from the file extension: `.md` saves Markdown, anything else saves JSON.
+
 ### JSON report
 
-The JSON output (via `--json` or `-o`) contains the full structured report:
+The JSON output (via `--json` or `-o report.json`) contains the full structured report:
 
 ```json
 {
