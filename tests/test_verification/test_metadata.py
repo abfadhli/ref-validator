@@ -7,7 +7,7 @@ import pytest
 from ref_validator.apis.crossref import CrossRefAPI
 from ref_validator.apis.semantic_scholar import SemanticScholarAPI
 from ref_validator.models.verification import ExistenceResult
-from ref_validator.verification.metadata import check_metadata, _last_names
+from ref_validator.verification.metadata import check_metadata, _last_names, _extract_last_name
 
 
 def test_last_names():
@@ -16,6 +16,27 @@ def test_last_names():
 
 def test_last_names_single():
     assert _last_names(["Smith"]) == {"smith"}
+
+
+def test_last_names_comma_format():
+    """'Last, First' format common in bibliographies."""
+    assert _last_names(["Smith, John", "Doe, Jane"]) == {"smith", "doe"}
+
+
+def test_last_names_suffix():
+    """Names with Jr., Sr., etc."""
+    assert _extract_last_name("John Smith Jr.") == "smith"
+    assert _extract_last_name("Robert Jones III") == "jones"
+
+
+def test_last_names_initial_format():
+    """'J. Smith' or 'J.A. Smith' format."""
+    assert _last_names(["J. Smith", "A.B. Doe"]) == {"smith", "doe"}
+
+
+def test_last_names_comma_with_initials():
+    """'Smith, J.' or 'Smith, J.A.' format."""
+    assert _last_names(["Smith, J.", "Doe, J.A."]) == {"smith", "doe"}
 
 
 @pytest.mark.asyncio

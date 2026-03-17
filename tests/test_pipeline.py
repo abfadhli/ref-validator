@@ -15,7 +15,7 @@ def test_validation_report_counts():
         CitationVerification(ref_id="1", status=VerificationStatus.VERIFIED),
         CitationVerification(ref_id="2", status=VerificationStatus.VERIFIED),
         CitationVerification(ref_id="3", status=VerificationStatus.UNVERIFIED),
-        CitationVerification(ref_id="4", status=VerificationStatus.PARTIAL),
+        CitationVerification(ref_id="4", status=VerificationStatus.UNVERIFIED),
         CitationVerification(ref_id="5", status=VerificationStatus.ERROR),
     ]
     report = ValidationReport(
@@ -25,8 +25,7 @@ def test_validation_report_counts():
         results=results,
     )
     assert report.verified_count == 2
-    assert report.unverified_count == 1
-    assert report.partial_count == 1
+    assert report.unverified_count == 2
     assert report.error_count == 1
 
 

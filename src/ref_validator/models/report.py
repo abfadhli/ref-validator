@@ -31,9 +31,5 @@ class ValidationReport(BaseModel):
         return sum(1 for r in self.results if r.status == VerificationStatus.UNVERIFIED)
 
     @property
-    def partial_count(self) -> int:
-        return sum(1 for r in self.results if r.status == VerificationStatus.PARTIAL)
-
-    @property
     def error_count(self) -> int:
         return sum(1 for r in self.results if r.status == VerificationStatus.ERROR)

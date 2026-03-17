@@ -5,6 +5,7 @@ import difflib
 import logging
 
 from ref_validator.apis.crossref import CrossRefAPI
+from ref_validator.apis.google_scholar import GoogleScholarAPI
 from ref_validator.apis.openalex import OpenAlexAPI
 from ref_validator.apis.semantic_scholar import SemanticScholarAPI
 from ref_validator.errors import APIError
@@ -33,28 +34,39 @@ def _extract_title_from_openalex(item: dict) -> str:
 async def check_existence(
     reference: Reference,
     *,
-    crossref: CrossRefAPI,
-    semantic_scholar: SemanticScholarAPI,
-    openalex: OpenAlexAPI,
+    crossref: CrossRefAPI | None = None,
+    semantic_scholar: SemanticScholarAPI | None = None,
+    openalex: OpenAlexAPI | None = None,
+    google_scholar: GoogleScholarAPI | None = None,
     threshold: float = 0.85,
 ) -> ExistenceResult:
     """Check if a reference exists by searching academic APIs."""
     # Fast path: DOI lookup
     if reference.doi:
-        result = await _check_by_doi(reference, crossref=crossref, semantic_scholar=semantic_scholar, threshold=threshold)
+        result = await _check_by_doi(
+            reference, crossref=crossref, semantic_scholar=semantic_scholar, threshold=threshold
+        )
         if result.found:
             return result
 
     if not reference.title:
         return ExistenceResult(issues=["No title or DOI available for search"])
 
-    # Search all APIs in parallel by title
-    results = await asyncio.gather(
-        _search_crossref(reference, crossref, threshold),
-        _search_semantic_scholar(reference, semantic_scholar, threshold),
-        _search_openalex(reference, openalex, threshold),
-        return_exceptions=True,
-    )
+    # Search all enabled APIs in parallel by title
+    search_tasks = []
+    if crossref is not None:
+        search_tasks.append(_search_crossref(reference, crossref, threshold))
+    if semantic_scholar is not None:
+        search_tasks.append(_search_semantic_scholar(reference, semantic_scholar, threshold))
+    if openalex is not None:
+        search_tasks.append(_search_openalex(reference, openalex, threshold))
+    if google_scholar is not None:
+        search_tasks.append(_search_google_scholar(reference, google_scholar, threshold))
+
+    if not search_tasks:
+        return ExistenceResult(found=False, issues=["No API sources enabled"])
+
+    results = await asyncio.gather(*search_tasks, return_exceptions=True)
 
     # Return best match
     best: ExistenceResult | None = None
@@ -77,42 +89,42 @@ async def check_existence(
 async def _check_by_doi(
     reference: Reference,
     *,
-    crossref: CrossRefAPI,
-    semantic_scholar: SemanticScholarAPI,
+    crossref: CrossRefAPI | None,
+    semantic_scholar: SemanticScholarAPI | None,
     threshold: float,
 ) -> ExistenceResult:
     """Try to look up by DOI directly."""
-    # Try CrossRef first
-    try:
-        data = await crossref.get_by_doi(reference.doi)
-        cr_title = _extract_title_from_crossref(data)
-        if cr_title:
-            sim = _fuzzy_title_match(reference.title, cr_title) if reference.title else 1.0
-            return ExistenceResult(
-                found=True,
-                source_api="crossref",
-                matched_doi=reference.doi,
-                matched_title=cr_title,
-                title_similarity=sim,
-            )
-    except APIError:
-        pass
+    if crossref is not None:
+        try:
+            data = await crossref.get_by_doi(reference.doi)
+            cr_title = _extract_title_from_crossref(data)
+            if cr_title:
+                sim = _fuzzy_title_match(reference.title, cr_title) if reference.title else 1.0
+                return ExistenceResult(
+                    found=True,
+                    source_api="crossref",
+                    matched_doi=reference.doi,
+                    matched_title=cr_title,
+                    title_similarity=sim,
+                )
+        except APIError:
+            pass
 
-    # Try Semantic Scholar
-    try:
-        data = await semantic_scholar.get_by_doi(reference.doi)
-        ss_title = data.get("title", "")
-        if ss_title:
-            sim = _fuzzy_title_match(reference.title, ss_title) if reference.title else 1.0
-            return ExistenceResult(
-                found=True,
-                source_api="semantic_scholar",
-                matched_doi=reference.doi,
-                matched_title=ss_title,
-                title_similarity=sim,
-            )
-    except APIError:
-        pass
+    if semantic_scholar is not None:
+        try:
+            data = await semantic_scholar.get_by_doi(reference.doi)
+            ss_title = data.get("title", "")
+            if ss_title:
+                sim = _fuzzy_title_match(reference.title, ss_title) if reference.title else 1.0
+                return ExistenceResult(
+                    found=True,
+                    source_api="semantic_scholar",
+                    matched_doi=reference.doi,
+                    matched_title=ss_title,
+                    title_similarity=sim,
+                )
+        except APIError:
+            pass
 
     return ExistenceResult(found=False, issues=[f"DOI {reference.doi} not found"])
 
@@ -184,7 +196,6 @@ async def _search_openalex(
         sim = _fuzzy_title_match(reference.title, oa_title)
         if sim >= threshold:
             doi = item.get("doi", "") or ""
-            # OpenAlex DOIs are full URLs; extract just the DOI
             if doi.startswith("https://doi.org/"):
                 doi = doi[len("https://doi.org/"):]
             return ExistenceResult(
@@ -192,6 +203,30 @@ async def _search_openalex(
                 source_api="openalex",
                 matched_doi=doi,
                 matched_title=oa_title,
+                title_similarity=sim,
+            )
+    return ExistenceResult(found=False)
+
+
+async def _search_google_scholar(
+    reference: Reference, api: GoogleScholarAPI, threshold: float
+) -> ExistenceResult:
+    try:
+        items = await api.search_by_title(reference.title)
+    except APIError as e:
+        return ExistenceResult(issues=[f"Google Scholar search failed: {e}"])
+
+    for item in items:
+        gs_title = item.get("title", "")
+        if not gs_title:
+            continue
+        sim = _fuzzy_title_match(reference.title, gs_title)
+        if sim >= threshold:
+            return ExistenceResult(
+                found=True,
+                source_api="google_scholar",
+                matched_doi="",
+                matched_title=gs_title,
                 title_similarity=sim,
             )
     return ExistenceResult(found=False)

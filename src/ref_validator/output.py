@@ -7,12 +7,11 @@ from rich.console import Console
 from rich.table import Table
 
 from ref_validator.models.report import ValidationReport
-from ref_validator.models.verification import VerificationStatus
+from ref_validator.models.verification import VerificationLevel, VerificationStatus
 
 STATUS_STYLES = {
     VerificationStatus.VERIFIED: ("VERIFIED", "green"),
     VerificationStatus.UNVERIFIED: ("UNVERIFIED", "red"),
-    VerificationStatus.PARTIAL: ("PARTIAL", "yellow"),
     VerificationStatus.ERROR: ("ERROR", "red bold"),
 }
 
@@ -32,7 +31,6 @@ def print_report(report: ValidationReport, console: Console | None = None) -> No
     # Summary
     console.print(
         f"  [green]Verified: {report.verified_count}[/green]  "
-        f"[yellow]Partial: {report.partial_count}[/yellow]  "
         f"[red]Unverified: {report.unverified_count}[/red]  "
         f"[red bold]Errors: {report.error_count}[/red bold]"
     )
@@ -57,6 +55,36 @@ def print_report(report: ValidationReport, console: Console | None = None) -> No
         )
 
     console.print(table)
+
+    # Claim details for level 3
+    if report.verification_level == VerificationLevel.CLAIMS:
+        has_claims = any(r.claim_results for r in report.results)
+        if has_claims:
+            console.print()
+            console.print("[bold]Claim Verification Details[/bold]")
+            for result in report.results:
+                if not result.claim_results:
+                    continue
+                ref_title = result.reference.title[:40] if result.reference else "(unknown)"
+                console.print(f"\n  [bold][{result.ref_id}][/bold] {ref_title}")
+                for cr in result.claim_results:
+                    if cr.supported is True:
+                        icon, style = "supported", "green"
+                    elif cr.supported is False:
+                        icon, style = "contradicted", "red"
+                    else:
+                        icon, style = "inconclusive", "yellow"
+                    if cr.source_type and cr.source_via:
+                        source = f" ({cr.source_type} via {cr.source_via})"
+                    elif cr.source_type:
+                        source = f" ({cr.source_type})"
+                    elif cr.sources_tried:
+                        source = f" (no source found, tried: {', '.join(cr.sources_tried)})"
+                    else:
+                        source = " (no source)"
+                    console.print(f"    [{style}]{icon}[/{style}]{source}: {cr.claim[:80]}")
+                    if cr.explanation:
+                        console.print(f"      [dim]{cr.explanation[:100]}[/dim]")
 
     # Cost summary
     if report.cost_summary:

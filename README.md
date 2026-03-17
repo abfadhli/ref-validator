@@ -34,6 +34,12 @@ ref-validator reads configuration from environment variables or a `.env` file in
 | `SEMANTIC_SCHOLAR_API_KEY` | No | `""` | Semantic Scholar API key for higher rate limits |
 | `EXTRACTION_MODEL` | No | `claude-sonnet-4-6` | Model used for citation extraction |
 | `VERIFICATION_MODEL` | No | `claude-sonnet-4-6` | Model used for claim verification (level 3) |
+| `USE_CROSSREF` | No | `true` | Enable CrossRef API |
+| `USE_SEMANTIC_SCHOLAR` | No | `true` | Enable Semantic Scholar API |
+| `USE_OPENALEX` | No | `true` | Enable OpenAlex API |
+| `USE_GOOGLE_SCHOLAR` | No | `false` | Enable Google Scholar (uses `scholarly`, may be rate-limited) |
+| `USE_ARXIV` | No | `true` | Enable arXiv API for free preprint full-text retrieval |
+| `REFS_DIR` | No | `""` | Directory containing PDFs of cited papers for level 3 verification |
 | `CONCURRENCY` | No | `5` | Default max concurrent API calls |
 | `API_TIMEOUT` | No | `30.0` | HTTP timeout in seconds for academic APIs |
 | `API_RETRIES` | No | `3` | Number of retry attempts on 429/5xx responses |
@@ -58,11 +64,14 @@ Recommended `.env` for best results:
 ANTHROPIC_API_KEY=sk-ant-api03-...
 UNPAYWALL_EMAIL=you@university.edu
 SEMANTIC_SCHOLAR_API_KEY=your-key-here
+USE_ARXIV=true
 ```
 
 Providing `UNPAYWALL_EMAIL` enables two things:
 1. Access to the CrossRef "polite pool" (faster, more reliable responses).
 2. Open-access PDF lookup via Unpaywall, which improves level 3 claim verification.
+
+Setting `USE_ARXIV=true` (default) enables free full-text retrieval of arXiv preprints, significantly improving level 3 claim verification for papers that cite preprints.
 
 ## Usage
 
@@ -77,6 +86,9 @@ ref-validator validate paper.pdf -l 1
 
 # Level 3: full verification including claim checking
 ref-validator validate paper.pdf -l 3
+
+# Level 3 with user-supplied PDFs of cited papers (best accuracy)
+ref-validator validate paper.pdf -l 3 --refs-dir ./cited_papers/
 
 # Save report as JSON file
 ref-validator validate paper.pdf -o report.json
@@ -108,6 +120,7 @@ Output:
   ✓ CrossRef
   ✓ Semantic Scholar
   ✓ OpenAlex
+  ✓ arXiv
 ```
 
 ### CLI reference
@@ -124,6 +137,7 @@ Options:
   --json                     Print JSON to stdout
   --costs                    Track and display LLM costs
   --concurrency INTEGER      Max concurrent API calls [default: 5]
+  --refs-dir PATH            Directory containing PDFs of cited papers
   --help                     Show this message and exit
 ```
 
@@ -162,11 +176,42 @@ Everything in level 1, plus metadata comparison.
 Everything in level 2, plus claim verification.
 
 - For each in-text citation, extracts what the citing paper claims about the reference.
-- Retrieves source content: abstract from Semantic Scholar, or full text via Unpaywall when available.
+- Retrieves source content using a priority chain of full-text sources (see below).
 - Uses the LLM to assess whether the source material supports the claim.
 - Confidence is reduced by 20% when only an abstract is available (vs. full text).
+- Output shows which source was used per claim (e.g., `full_text via arxiv`, `abstract via semantic_scholar`).
+
+**Full-text retrieval priority chain** (stops at first success):
+
+| Priority | Source | Type | Description |
+|---|---|---|---|
+| 1 | **User-supplied PDF** (`--refs-dir`) | full_text | Best quality — user-curated PDFs matched by title or DOI |
+| 2 | **arXiv** | full_text | Free full text for preprints, searched by title |
+| 3 | **Unpaywall** | full_text | Open-access PDFs via DOI lookup |
+| 4 | **DOI direct resolution** | full_text | Follows DOI links to grab HTML/PDF from publisher pages (MDPI, PLOS, Frontiers, etc.) |
+| 5 | **Semantic Scholar** | abstract | Abstract fallback via DOI |
+| 6 | **Google Scholar** | abstract | Last resort abstract via title search |
 
 **Best for:** Thorough validation of critical papers. Higher LLM cost due to per-claim verification calls.
+
+#### Supplying your own PDFs
+
+For paywalled papers where automated retrieval fails, you can supply PDFs directly:
+
+```bash
+mkdir cited_papers/
+# Add PDFs named by title or DOI:
+#   cited_papers/attention is all you need.pdf
+#   cited_papers/10.1038_s41586-020-0001-1.pdf
+ref-validator validate paper.pdf -l 3 --refs-dir ./cited_papers/
+```
+
+Matching rules:
+- **By DOI:** filename contains the DOI (with `/` replaced by `_` or `-`).
+- **By title:** filename fuzzy-matches the reference title (threshold: 0.6).
+- User-supplied PDFs are always checked first and take priority over all API sources.
+
+You can also set the `REFS_DIR` environment variable instead of using `--refs-dir` each time.
 
 ## Understanding the output
 
@@ -187,6 +232,19 @@ Status meanings:
 - **PARTIAL** — Paper exists but some metadata doesn't match, or claims are inconclusive.
 - **UNVERIFIED** — Paper not found in any database, or a claim was contradicted.
 - **ERROR** — Something went wrong (API failure, timeout, etc.). The issue is noted but the run continues.
+
+At level 3, a **Claim Verification Details** section follows the table:
+
+```
+Claim Verification Details
+
+  [1] Attention Is All You Need
+    supported (full_text via arxiv): Transformer models outperform RNNs on translation tasks
+      Source confirms BLEU score improvements on WMT benchmarks
+    inconclusive (no source found, tried: refs_dir, arxiv, unpaywall, doi_resolver): Model scales linearly
+```
+
+Each claim shows its verdict (`supported`, `contradicted`, or `inconclusive`) and which source provided the content. When no source was found, the list of attempted sources is shown.
 
 ### JSON report
 
@@ -218,6 +276,24 @@ The JSON output (via `--json` or `-o`) contains the full structured report:
     }
   ],
   "cost_summary": null
+}
+```
+
+At level 3, each result includes a `claim_results` array:
+
+```json
+{
+  "claim_results": [
+    {
+      "claim": "Transformer models outperform RNNs on translation tasks",
+      "supported": true,
+      "confidence": 0.92,
+      "explanation": "Source confirms BLEU score improvements...",
+      "source_type": "full_text",
+      "source_via": "arxiv",
+      "sources_tried": ["refs_dir", "arxiv"]
+    }
+  ]
 }
 ```
 
@@ -322,3 +398,11 @@ FUZZY_TITLE_THRESHOLD=0.75
 **"No text content found in PDF"** — The PDF may be image-based (scanned). ref-validator requires text-based PDFs. Use OCR software first.
 
 **Slow performance** — Increase concurrency (`--concurrency 10`). Add `UNPAYWALL_EMAIL` to access the CrossRef polite pool.
+
+**Level 3 claims all "inconclusive"** — This usually means no full text could be retrieved. Try:
+1. Supply PDFs of the cited papers via `--refs-dir ./cited_papers/`.
+2. Ensure `USE_ARXIV=true` (default) — this helps for papers citing arXiv preprints.
+3. Set `UNPAYWALL_EMAIL` to enable open-access PDF lookup.
+4. Some paywalled papers can still be resolved via DOI direct resolution (enabled by default).
+
+**User-supplied PDFs not being matched** — Check that the filename matches the reference title or DOI. The DOI `/` should be replaced with `_` or `-` in the filename (e.g., `10.1038_s41586-020-0001-1.pdf`). Title matching uses fuzzy comparison with a 0.6 threshold.

@@ -14,7 +14,6 @@ class VerificationLevel(int, Enum):
 class VerificationStatus(str, Enum):
     VERIFIED = "verified"
     UNVERIFIED = "unverified"
-    PARTIAL = "partial"
     ERROR = "error"
 
 
@@ -48,6 +47,8 @@ class ClaimVerificationResult(BaseModel):
     confidence: float = Field(default=0.0, description="0-1 confidence in the verdict")
     explanation: str = Field(default="")
     source_type: str = Field(default="", description="abstract or full_text")
+    source_via: str = Field(default="", description="Which source provided the content (e.g. arxiv, unpaywall, refs_dir)")
+    sources_tried: list[str] = Field(default_factory=list, description="Sources attempted when none succeeded")
 
 
 class CitationVerification(BaseModel):

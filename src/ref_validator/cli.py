@@ -1,8 +1,8 @@
 """Typer CLI for ref-validator."""
 
 import asyncio
-import sys
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -48,6 +48,7 @@ def validate(
     json_output: bool = typer.Option(False, "--json", help="Print JSON to stdout"),
     costs: bool = typer.Option(False, "--costs", help="Track and display LLM costs"),
     concurrency: int = typer.Option(5, "--concurrency", min=1, max=50, help="Max concurrent API calls"),
+    refs_dir: Path | None = typer.Option(None, "--refs-dir", help="Directory containing PDFs of cited papers"),
 ) -> None:
     """Validate references in an academic paper."""
     try:
@@ -57,6 +58,11 @@ def validate(
         raise typer.Exit(1)
 
     settings.concurrency = concurrency
+    if refs_dir is not None:
+        if not refs_dir.is_dir():
+            console.print(f"[red]--refs-dir path is not a directory: {refs_dir}[/red]")
+            raise typer.Exit(1)
+        settings.refs_dir = str(refs_dir)
     verification_level = VerificationLevel(level)
 
     async def _run() -> None:
@@ -95,15 +101,23 @@ def check_apis() -> None:
         except Exception:
             settings = Settings(anthropic_api_key="dummy")  # type: ignore[call-arg]
 
+        from ref_validator.apis.arxiv import ArxivAPI
         from ref_validator.apis.crossref import CrossRefAPI
+        from ref_validator.apis.google_scholar import GoogleScholarAPI
         from ref_validator.apis.openalex import OpenAlexAPI
         from ref_validator.apis.semantic_scholar import SemanticScholarAPI
 
-        apis = [
-            ("CrossRef", CrossRefAPI(mailto=settings.unpaywall_email)),
-            ("Semantic Scholar", SemanticScholarAPI(api_key=settings.semantic_scholar_api_key)),
-            ("OpenAlex", OpenAlexAPI(mailto=settings.unpaywall_email)),
-        ]
+        apis: list[tuple[str, Any]] = []
+        if settings.use_crossref:
+            apis.append(("CrossRef", CrossRefAPI(mailto=settings.unpaywall_email)))
+        if settings.use_semantic_scholar:
+            apis.append(("Semantic Scholar", SemanticScholarAPI(api_key=settings.semantic_scholar_api_key)))
+        if settings.use_openalex:
+            apis.append(("OpenAlex", OpenAlexAPI(mailto=settings.unpaywall_email)))
+        if settings.use_google_scholar:
+            apis.append(("Google Scholar", GoogleScholarAPI()))
+        if settings.use_arxiv:
+            apis.append(("arXiv", ArxivAPI()))
 
         for name, client in apis:
             try:
