@@ -24,6 +24,113 @@ from ref_validator.models.verification import ClaimVerificationResult, Existence
 
 logger = logging.getLogger(__name__)
 
+# Minimum ratio for arXiv title match (pre-fetch and post-fetch)
+_ARXIV_TITLE_THRESHOLD = 0.90
+
+
+def _validate_content(text: str, reference: Reference, existence: ExistenceResult) -> bool:
+    """Verify that fetched content actually belongs to the expected paper.
+
+    Checks whether the text contains the expected title or at least one author
+    last name. This catches cases where a source returns the wrong paper,
+    a landing page, or a document listing.
+    """
+    if not text:
+        return False
+
+    text_lower = text[:10_000].lower()  # only check the beginning
+
+    # Check for title presence (normalized)
+    expected_title = (existence.matched_title or reference.title or "").lower()
+    title_found = False
+    if expected_title and len(expected_title) > 10:
+        norm_title = " ".join(expected_title.split())
+        if norm_title in text_lower:
+            # Verify it's not a substring of a longer, different title.
+            # Find where the title appears and check surrounding context.
+            idx = text_lower.find(norm_title)
+            if idx >= 0:
+                # Check that the match isn't embedded in a longer title
+                # by looking at characters before/after the match
+                before = text_lower[max(0, idx - 1):idx]
+                after_idx = idx + len(norm_title)
+                after = text_lower[after_idx:after_idx + 1] if after_idx < len(text_lower) else ""
+                # If surrounded by word characters, it might be part of a longer title
+                if before.isalpha() or after.isalpha():
+                    # Longer title — check if the full surrounding phrase is very different
+                    # Extract a window around the match
+                    window_start = max(0, idx - 30)
+                    window_end = min(len(text_lower), after_idx + 30)
+                    window = text_lower[window_start:window_end]
+                    # If the window is much longer than our title, be suspicious
+                    pass  # fall through to author check for confirmation
+                else:
+                    title_found = True
+        # Try partial match — first 60 chars of title (handles subtitle truncation)
+        if not title_found:
+            short_title = norm_title[:60]
+            if len(short_title) > 20 and short_title in text_lower:
+                title_found = True
+
+    # Check for author last name presence (at least one)
+    author_found = False
+    if reference.authors:
+        for author in reference.authors[:3]:  # check first 3 authors
+            parts = author.strip().split()
+            if parts:
+                last_name = parts[0].rstrip(",").lower() if "," in author else parts[-1].lower()
+                if len(last_name) > 2 and last_name in text_lower:
+                    author_found = True
+                    break
+
+    # Both title and author = strong match
+    if title_found and author_found:
+        return True
+    # Title alone is sufficient if it's long/specific enough (>40 chars)
+    if title_found and len(expected_title) > 40:
+        return True
+    # Author alone is sufficient (title might not appear verbatim in the text)
+    if author_found:
+        return True
+
+    logger.info(
+        "Content validation failed for '%s' — text does not contain expected title or authors",
+        expected_title[:50],
+    )
+    return False
+
+
+def _looks_like_paper(text: str) -> bool:
+    """Check if text looks like actual paper content vs a landing page or listing.
+
+    Rejects short text, document listings, cookie notices, etc.
+    """
+    if len(text) < 2000:
+        return False
+
+    text_lower = text[:5000].lower()
+
+    # Reject common landing page / junk indicators
+    junk_signals = [
+        "accept cookies",
+        "cookie policy",
+        "sign in to access",
+        "purchase this article",
+        "add to cart",
+        "subscribe to access",
+    ]
+    junk_count = sum(1 for s in junk_signals if s in text_lower)
+    if junk_count >= 2:
+        return False
+
+    # Should have paragraph-length content (not just a list of links)
+    # Count sentences (rough heuristic: periods followed by space+uppercase or newline)
+    sentences = text.count(". ") + text.count(".\n")
+    if sentences < 10:
+        return False
+
+    return True
+
 
 def _fuzzy_match_filename(filename: str, title: str, doi: str) -> bool:
     """Check if a PDF filename fuzzy-matches a reference title or contains the DOI."""
@@ -115,17 +222,18 @@ async def _get_source_content(
         try:
             results = await arxiv.search_by_title(existence.matched_title, max_results=3)
             for r in results:
-                # Verify title match
                 if r.get("title"):
                     ratio = SequenceMatcher(
                         None,
                         existence.matched_title.lower(),
                         r["title"].lower(),
                     ).ratio()
-                    if ratio > 0.85 and r.get("pdf_url"):
+                    if ratio > _ARXIV_TITLE_THRESHOLD and r.get("pdf_url"):
                         text = await arxiv.fetch_full_text(r["pdf_url"])
-                        if text:
+                        if text and _validate_content(text, reference, existence):
                             return text, "full_text", "arxiv", sources_tried
+                        elif text:
+                            logger.info("arXiv PDF failed content validation for '%s'", existence.matched_title[:50])
         except (APIError, Exception) as e:
             logger.debug("arXiv retrieval failed: %s", e)
 
@@ -135,15 +243,19 @@ async def _get_source_content(
         pdf_url = await unpaywall.get_oa_pdf_url(existence.matched_doi)
         if pdf_url:
             text = await _fetch_full_text(pdf_url)
-            if text:
+            if text and _validate_content(text, reference, existence):
                 return text, "full_text", "unpaywall", sources_tried
+            elif text:
+                logger.info("Unpaywall content failed validation for '%s'", existence.matched_title[:50])
 
     # 4. DOI direct resolution — follow DOI link, grab HTML/PDF
     if doi_resolver is not None and existence.matched_doi:
         sources_tried.append("doi_resolver")
         text = await doi_resolver.resolve_full_text(existence.matched_doi)
-        if text:
+        if text and _looks_like_paper(text) and _validate_content(text, reference, existence):
             return text, "full_text", "doi_resolver", sources_tried
+        elif text:
+            logger.info("DOI resolver content failed validation for '%s'", existence.matched_title[:50])
 
     # 5. Semantic Scholar abstract — fallback
     if semantic_scholar is not None and existence.matched_doi:
